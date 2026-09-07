@@ -1,8 +1,9 @@
 create-pages:
-  script:
-      - mkdir public
-          - cp -r . public/
-            artifacts:
-                paths:
-                      - public
-                        pages: true
+    pages: true
+      script:
+          - mkdir public
+              - cp -r ./* public/
+                  - rm -rf public/public
+                    artifacts:
+                        paths:
+                              - public
