@@ -65,6 +65,7 @@
   #track-details{margin-top:20px;text-align:center;width:100%}
   #track-title{font-size:17px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 8px}
   #track-sub{font-size:12px;color:var(--muted);margin-top:4px}
+  #wl-status{font-size:10px;color:var(--muted);margin-top:6px;letter-spacing:0.05em;min-height:12px}
 
   /* PROGRESS */
   #progress-wrap{padding:0 32px 6px;width:100%}
@@ -117,6 +118,7 @@
       <div id="track-details">
         <div id="track-title">Nothing playing</div>
         <div id="track-sub">Add tracks to get started</div>
+        <div id="wl-status"></div>
       </div>
     </div>
 
@@ -322,8 +324,86 @@ audio.ontimeupdate=()=>{
 document.getElementById('seek-input').oninput=e=>{if(audio.duration)audio.currentTime=(e.target.value/100)*audio.duration;};
 document.getElementById('vol-slider').oninput=e=>{audio.volume=e.target.value;};
 audio.onended=()=>{if(repeat===2){audio.currentTime=0;audio.play();}else doNext();};
-audio.onpause=()=>{if(audio.src)document.getElementById('play-icon').textContent='▶';}
-audio.onplay=()=>{document.getElementById('play-icon').textContent='⏸';}
+audio.onpause=()=>{if(audio.src)document.getElementById('play-icon').textContent='▶';releaseWakeLock();}
+audio.onplay=()=>{document.getElementById('play-icon').textContent='⏸';requestWakeLock();}
+
+/* ── SCREEN WAKE LOCK ── */
+/* Keeps the screen on while music is playing. Released on pause/stop. */
+let wakeLock=null, wakeLockPending=false;
+
+function setWl(t){document.getElementById('wl-status').textContent=t?'Screen lock: '+t:'';}
+
+async function requestWakeLock(){
+  if(!('wakeLock' in navigator)){startVideoFallback();return;}
+  if(wakeLock||wakeLockPending||document.visibilityState!=='visible') return;
+  wakeLockPending=true;
+  try{
+    const lock=await navigator.wakeLock.request('screen');
+    // playback may have stopped while the request was in flight
+    if(audio.paused){await lock.release();return;}
+    wakeLock=lock;
+    setWl('on');
+    lock.addEventListener('release',()=>{if(wakeLock===lock){wakeLock=null;setWl('off');}});
+  }catch(err){
+    wakeLock=null; // denied (e.g. battery saver) — not fatal
+    if(!audio.paused) startVideoFallback();
+  }finally{
+    wakeLockPending=false;
+  }
+}
+
+async function releaseWakeLock(){
+  stopVideoFallback();
+  if(!wakeLock) return;
+  const lock=wakeLock;
+  wakeLock=null;
+  setWl('off');
+  try{await lock.release();}catch(err){}
+}
+
+/* Fallback for browsers that refuse the Wake Lock API: play a tiny muted
+   canvas-generated video, which makes Android treat the page like video playback. */
+let fbVideo=null, fbTimer=null;
+
+function startVideoFallback(){
+  if(fbVideo||audio.paused) return;
+  try{
+    const c=document.createElement('canvas');
+    c.width=c.height=16;
+    const ctx=c.getContext('2d');
+    let n=0;
+    const draw=()=>{ctx.fillStyle=(n++%2)?'#000':'#010101';ctx.fillRect(0,0,16,16);};
+    draw();
+    fbTimer=setInterval(draw,500);
+    const v=document.createElement('video');
+    v.muted=true; v.loop=true; v.playsInline=true;
+    v.setAttribute('playsinline','');
+    v.srcObject=c.captureStream(2);
+    v.style.cssText='position:fixed;bottom:0;right:0;width:4px;height:4px;opacity:0.01;pointer-events:none';
+    document.body.appendChild(v);
+    fbVideo=v;
+    v.play().then(()=>setWl('on (video fallback)')).catch(()=>{setWl('blocked (fallback failed)');stopVideoFallback();});
+  }catch(err){
+    setWl('blocked ('+err.name+')');
+    stopVideoFallback();
+  }
+}
+
+function stopVideoFallback(){
+  if(fbTimer){clearInterval(fbTimer);fbTimer=null;}
+  if(fbVideo){
+    try{fbVideo.pause();}catch(e){}
+    fbVideo.srcObject=null;
+    fbVideo.remove();
+    fbVideo=null;
+    setWl('off');
+  }
+}
+
+// The browser auto-releases the lock when the tab is hidden; re-acquire on return
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible'&&!audio.paused) requestWakeLock();
+});
 
 /* ── KEYBOARD ── */
 document.addEventListener('keydown',e=>{
